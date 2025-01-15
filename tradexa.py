@@ -7,9 +7,9 @@ def setup_databases():
     orders_conn = sqlite3.connect('orders.db')
     products_conn = sqlite3.connect('products.db')
 
-    users_conn.execute('CREATE TABLE IF NOT EXISTS Users (id INTEGER, name TEXT, email TEXT)')
-    orders_conn.execute('CREATE TABLE IF NOT EXISTS Orders (id INTEGER, user_id INTEGER, product_id INTEGER, quantity INTEGER)')
-    products_conn.execute('CREATE TABLE IF NOT EXISTS Products (id INTEGER, name TEXT, price REAL)')
+    users_conn.execute('CREATE TABLE IF NOT EXISTS Users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)')
+    orders_conn.execute('CREATE TABLE IF NOT EXISTS Orders (id INTEGER PRIMARY KEY, user_id INTEGER, product_id INTEGER, quantity INTEGER)')
+    products_conn.execute('CREATE TABLE IF NOT EXISTS Products (id INTEGER PRIMARY KEY, name TEXT, price REAL)')
 
     users_conn.close()
     orders_conn.close()
@@ -19,12 +19,13 @@ def setup_databases():
 def validate_and_insert(db_name, table, data, validator):
     valid_data = []
     invalid_data = []
-    
+
     for record in data:
-        if validator(record):
+        is_valid, reason = validator(record)
+        if is_valid:
             valid_data.append(record)
         else:
-            invalid_data.append(record)
+            invalid_data.append((record, reason))
 
     try:
         conn = sqlite3.connect(db_name)
@@ -35,21 +36,54 @@ def validate_and_insert(db_name, table, data, validator):
             conn.commit()
         print(f"Inserted into {table}: {len(valid_data)} records.")
         if invalid_data:
-            print(f"Error/lack of info in records for {table}: {invalid_data}")
+            for record, reason in invalid_data:
+                print(f"Failed to insert into {table}: {record} | Reason: {reason}")
     except Exception as e:
         print(f"Error inserting into {table}: {e}")
     finally:
         conn.close()
 
-# Validators
+#Validators
 def validate_users(record):
-    return len(record) == 3 and record[0] > 0 and record[1] and "@" in record[2]
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT 1 FROM Users WHERE name = ? AND email = ?", (record[1], record[2]))
+    is_duplicate = cursor.fetchone()
+    conn.close()
+
+    # rules
+    if len(record) != 3 or record[0] <= 0 or not record[1] or "@" not in record[2]:
+        return False, "Invalid data format or missing fields"
+    if is_duplicate:
+        return False, f"Duplicate entry: User with name '{record[1]}' and email '{record[2]}' already exists"
+    return True, None
 
 def validate_products(record):
-    return len(record) == 3 and record[0] > 0 and record[1] and record[2] > 0
+    conn = sqlite3.connect('products.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM Products WHERE name = ? AND price = ?", (record[1], record[2]))
+    is_duplicate = cursor.fetchone()
+    conn.close()
+
+    if len(record) != 3 or record[0] <= 0 or not record[1] or record[2] <= 0:
+        return False, "Invalid data format, missing fields, or negative price"
+    if is_duplicate:
+        return False, "Duplicate product name and price"
+    return True, None
 
 def validate_orders(record):
-    return len(record) == 4 and record[0] > 0 and record[1] > 0 and record[2] > 0 and record[3] > 0
+    conn = sqlite3.connect('products.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM Products WHERE id = ?", (record[2],))
+    product_exists = cursor.fetchone()
+    conn.close()
+
+    if len(record) != 4 or record[0] <= 0 or record[1] <= 0 or record[2] <= 0 or record[3] <= 0:
+        return False, "Invalid data format, missing fields, negative/zero quantity"
+    if not product_exists:
+        return False, "Product ID does not exist"
+    return True, None
 
 # M-Threaded 
 def threaded_insertion():
@@ -90,9 +124,11 @@ def threaded_insertion():
                         (10, 10, 10, 2)
                   ]
 
+
+    validate_and_insert('products.db', 'Products', products_data, validate_products)
+
     threads = [
         threading.Thread(target=validate_and_insert, args=('users.db', 'Users', users_data, validate_users)),
-        threading.Thread(target=validate_and_insert, args=('products.db', 'Products', products_data, validate_products)),
         threading.Thread(target=validate_and_insert, args=('orders.db', 'Orders', orders_data, validate_orders))
     ]
 
@@ -101,7 +137,7 @@ def threaded_insertion():
     for thread in threads:
         thread.join()
 
-# execution
+# Execution
 if __name__ == "__main__":
     setup_databases()
     threaded_insertion()
